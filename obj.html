@@ -1,33 +1,207 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Object Detection with YOLO</title>
-    <style>
-        body {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #000;
-        }
-        video, canvas {
-            position: absolute;
-            top: 0;
-            left: 0;
-        }
-        canvas {
-            z-index: 10;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E-Ink CCTV Object Detection</title>
+  <style>
+    body {
+      margin: 0;
+      background-color: #f5f2e9;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+      color: #1a1a1a;
+    }
+
+    .container {
+      display: flex;
+      gap: 20px;
+      align-items: flex-start;
+    }
+
+    .cctv-frame {
+      position: relative;
+      width: 640px;
+      height: 480px;
+      border: 3px solid #1a1a1a;
+      box-shadow: 0 0 30px rgba(0, 0, 0, 0.25);
+      overflow: hidden;
+      background: #f5f2e9;
+    }
+
+    video, canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+
+    video {
+      width: 640px;
+      height: 480px;
+      object-fit: cover;
+      transform: scaleX(-1); /* mirror the feed */
+      filter: brightness(1.5) contrast(2) grayscale(1)
+        url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg"><filter id="posterize" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncR type="discrete" tableValues="0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 1"/><feFuncG type="discrete" tableValues="0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 1"/><feFuncB type="discrete" tableValues="0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 1"/></feComponentTransfer></filter></svg>#posterize');
+      mix-blend-mode: multiply;
+    }
+
+    canvas {
+      z-index: 10;
+    }
+
+    /* Film grain overlay */
+    .overlay::before {
+      content: "";
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background: url("https://www.transparenttextures.com/patterns/noise-pattern-with-subtle-cross-lines.png");
+      opacity: 0.25;
+      mix-blend-mode: multiply;
+      animation: grainMove 1s steps(2) infinite;
+    }
+
+    /* Vignette for analog depth */
+    .overlay::after {
+      content: "";
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      background: radial-gradient(ellipse at center, transparent 70%, rgba(0,0,0,0.2) 100%);
+      pointer-events: none;
+    }
+
+    @keyframes grainMove {
+      0% { transform: translate(0, 0); }
+      50% { transform: translate(-2px, 1px); }
+      100% { transform: translate(0, 0); }
+    }
+
+    /* Terminal Window */
+    .terminal {
+      width: 300px;
+      height: 480px;
+      background: #f5f2e9;
+      border: 2px solid #1a1a1a;
+      padding: 10px;
+      color: #1a1a1a;
+      overflow-y: hidden;
+      font-size: 12px;
+      line-height: 1.4;
+      image-rendering: pixelated;
+    }
+
+    .terminal h3 {
+      margin: 0 0 5px 0;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .log {
+      height: calc(100% - 20px);
+      overflow-y: auto;
+      scrollbar-width: none;
+    }
+
+    .log::-webkit-scrollbar {
+      display: none;
+    }
+  </style>
 </head>
 <body>
-<video id="video" width="640" height="480" autoplay></video>
-<canvas id="canvas" width="640" height="480"></canvas>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
-<script src="obj.js"></script>
+  <div class="container">
+    <div class="cctv-frame overlay">
+      <video id="video" width="640" height="480" autoplay></video>
+      <canvas id="canvas" width="640" height="480"></canvas>
+    </div>
+    <div class="terminal">
+      <h3>[TERMINAL_LOG]</h3>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const logDiv = document.getElementById('log');
+    const objectStates = {};
+
+    function addLog(message) {
+      const time = new Date().toLocaleTimeString();
+      logDiv.innerHTML += `[${time}] ${message}<br>`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => {
+        video.srcObject = stream;
+        addLog("Camera feed initialized...");
+        return cocoSsd.load();
+      })
+      .then(model => {
+        addLog("E-Ink Detector Model Loaded...");
+        detectFrame(model);
+      })
+      .catch(err => addLog("ERROR: " + err.message));
+
+    function detectFrame(model) {
+      model.detect(video).then(predictions => {
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.clearRect(-canvas.width, 0, canvas.width, canvas.height);
+        ctx.restore();
+
+        ctx.save();
+        ctx.scale(-1, 1);
+        ctx.strokeStyle = "#1a1a1a";
+        ctx.lineWidth = 2;
+        ctx.font = "bold 14px Courier New";
+        ctx.fillStyle = "#1a1a1a";
+
+        predictions.forEach(pred => {
+          const id = pred.class + Math.round(pred.bbox[0]) + Math.round(pred.bbox[1]);
+          if (!objectStates[id]) {
+            objectStates[id] = { pixelation: 20 };
+            addLog(`Detected: ${pred.class} (${(pred.score * 100).toFixed(1)}%)`);
+          }
+
+          const state = objectStates[id];
+          const [x, y, width, height] = pred.bbox;
+
+          // Mirror coordinates
+          const mirroredX = canvas.width - x - width;
+
+          // Animate pixelation -> clarity
+          if (state.pixelation > 1) state.pixelation -= 0.5;
+
+          // Create pixelated detection area
+          const tempCanvas = document.createElement("canvas");
+          const tctx = tempCanvas.getContext("2d");
+          tempCanvas.width = width / state.pixelation;
+          tempCanvas.height = height / state.pixelation;
+
+          tctx.drawImage(video, mirroredX, y, width, height, 0, 0, tempCanvas.width, tempCanvas.height);
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(tempCanvas, -mirroredX - width, y, width, height);
+
+          // Draw bounding box and label
+          ctx.beginPath();
+          ctx.rect(-mirroredX - width, y, width, height);
+          ctx.stroke();
+          ctx.fillText(pred.class.toUpperCase(), -mirroredX - width + 4, y + 14);
+        });
+
+        ctx.restore();
+        requestAnimationFrame(() => detectFrame(model));
+      });
+    }
+  </script>
 </body>
 </html>
