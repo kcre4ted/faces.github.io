@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>E-Ink CCTV Object Detection</title>
+  <title>DEDSEC E-Ink CCTV Interface</title>
   <style>
     body {
       margin: 0;
@@ -15,12 +15,15 @@
       overflow: hidden;
       font-family: 'Courier New', monospace;
       color: #1a1a1a;
+      image-rendering: pixelated;
+      filter: contrast(1.4) saturate(0.6);
     }
 
     .container {
       display: flex;
       gap: 20px;
       align-items: flex-start;
+      position: relative;
     }
 
     .cctv-frame {
@@ -43,36 +46,35 @@
       width: 640px;
       height: 480px;
       object-fit: cover;
-      transform: scaleX(-1); /* mirror the feed */
+      transform: scaleX(-1);
       filter: brightness(1.5) contrast(2) grayscale(1)
-        url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg"><filter id="posterize" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncR type="discrete" tableValues="0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 1"/><feFuncG type="discrete" tableValues="0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 1"/><feFuncB type="discrete" tableValues="0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 1"/></feComponentTransfer></filter></svg>#posterize');
+        url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg"><filter id="posterize" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncR type="discrete" tableValues="0 .15 .3 .45 .6 .75 .9 1"/><feFuncG type="discrete" tableValues="0 .15 .3 .45 .6 .75 .9 1"/><feFuncB type="discrete" tableValues="0 .15 .3 .45 .6 .75 .9 1"/></feComponentTransfer></filter></svg>#posterize');
       mix-blend-mode: multiply;
     }
 
-    canvas {
-      z-index: 10;
-    }
+    canvas { z-index: 10; }
 
-    /* Film grain overlay */
+    /* Noise overlay */
     .overlay::before {
       content: "";
       position: absolute;
       width: 100%;
       height: 100%;
       background: url("https://www.transparenttextures.com/patterns/noise-pattern-with-subtle-cross-lines.png");
-      opacity: 0.25;
+      opacity: 0.3;
       mix-blend-mode: multiply;
       animation: grainMove 1s steps(2) infinite;
+      z-index: 5;
     }
 
-    /* Vignette for analog depth */
     .overlay::after {
       content: "";
       position: absolute;
       width: 100%;
       height: 100%;
-      background: radial-gradient(ellipse at center, transparent 70%, rgba(0,0,0,0.2) 100%);
+      background: radial-gradient(ellipse at center, transparent 70%, rgba(0,0,0,0.25) 100%);
       pointer-events: none;
+      z-index: 9;
     }
 
     @keyframes grainMove {
@@ -81,7 +83,7 @@
       100% { transform: translate(0, 0); }
     }
 
-    /* Terminal Window */
+    /* Terminal window */
     .terminal {
       width: 300px;
       height: 480px;
@@ -93,6 +95,8 @@
       font-size: 12px;
       line-height: 1.4;
       image-rendering: pixelated;
+      position: relative;
+      z-index: 2;
     }
 
     .terminal h3 {
@@ -107,8 +111,46 @@
       scrollbar-width: none;
     }
 
-    .log::-webkit-scrollbar {
-      display: none;
+    .log::-webkit-scrollbar { display: none; }
+
+    /* ======= DedSec Virus Popups ======= */
+    .popup {
+      position: absolute;
+      background: rgba(0, 0, 0, 0.05);
+      border: 1px solid rgba(0,0,0,0.3);
+      color: #1a1a1a;
+      padding: 8px 10px;
+      font-size: 10px;
+      text-transform: uppercase;
+      pointer-events: none;
+      animation: popupAnim 4s ease-in-out forwards;
+      mix-blend-mode: multiply;
+      filter: contrast(1.5);
+    }
+
+    @keyframes popupAnim {
+      0% { opacity: 0; transform: scale(0.8) rotate(-2deg); }
+      10% { opacity: 1; transform: scale(1) rotate(0deg); }
+      90% { opacity: 1; transform: scale(1); }
+      100% { opacity: 0; transform: scale(0.9) rotate(2deg); }
+    }
+
+    /* Scanline glitch */
+    .scanline {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: rgba(0,0,0,0.15);
+      animation: scan 5s linear infinite;
+      mix-blend-mode: multiply;
+      z-index: 11;
+    }
+
+    @keyframes scan {
+      from { top: -10%; }
+      to { top: 110%; }
     }
   </style>
 </head>
@@ -117,6 +159,7 @@
     <div class="cctv-frame overlay">
       <video id="video" width="640" height="480" autoplay></video>
       <canvas id="canvas" width="640" height="480"></canvas>
+      <div class="scanline"></div>
     </div>
     <div class="terminal">
       <h3>[TERMINAL_LOG]</h3>
@@ -170,18 +213,15 @@
           if (!objectStates[id]) {
             objectStates[id] = { pixelation: 20 };
             addLog(`Detected: ${pred.class} (${(pred.score * 100).toFixed(1)}%)`);
+            triggerPopup(pred.class);
           }
 
           const state = objectStates[id];
           const [x, y, width, height] = pred.bbox;
-
-          // Mirror coordinates
           const mirroredX = canvas.width - x - width;
 
-          // Animate pixelation -> clarity
           if (state.pixelation > 1) state.pixelation -= 0.5;
 
-          // Create pixelated detection area
           const tempCanvas = document.createElement("canvas");
           const tctx = tempCanvas.getContext("2d");
           tempCanvas.width = width / state.pixelation;
@@ -191,7 +231,6 @@
           ctx.imageSmoothingEnabled = false;
           ctx.drawImage(tempCanvas, -mirroredX - width, y, width, height);
 
-          // Draw bounding box and label
           ctx.beginPath();
           ctx.rect(-mirroredX - width, y, width, height);
           ctx.stroke();
@@ -202,6 +241,34 @@
         requestAnimationFrame(() => detectFrame(model));
       });
     }
+
+    /* ===== Random Virus Popups ===== */
+    const popupTexts = [
+      '⚠ intrusion detected',
+      'signal jam active',
+      'node compromised',
+      'uploading payload...',
+      'trace in progress',
+      'firewall override',
+      'data ghost detected',
+      'matrix sync error'
+    ];
+
+    function triggerPopup(text) {
+      const popup = document.createElement('div');
+      popup.className = 'popup';
+      popup.textContent = text;
+      const x = Math.random() * (window.innerWidth - 250);
+      const y = Math.random() * (window.innerHeight - 150);
+      popup.style.left = `${x}px`;
+      popup.style.top = `${y}px`;
+      document.body.appendChild(popup);
+      setTimeout(() => popup.remove(), 4000);
+    }
+
+    setInterval(() => {
+      triggerPopup(popupTexts[Math.floor(Math.random() * popupTexts.length)]);
+    }, 1200);
   </script>
 </body>
 </html>
